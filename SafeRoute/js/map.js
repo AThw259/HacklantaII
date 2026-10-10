@@ -19,6 +19,7 @@ import {
 
 import {
   distance,
+  distanceToRoute,
   scoreRoute,
   penalties
 } from "./scoring.js?v=grid-4";
@@ -77,6 +78,50 @@ let callTimer =
 
 let lastSearch =
   0;
+
+let scoredRoutes =
+  [];
+
+let unsafeMode =
+  false;
+
+let safetyWatchId =
+  null;
+
+let safetyLastPosition =
+  null;
+
+let inactivityTimer =
+  null;
+
+let safetyCountdownTimer =
+  null;
+
+let alarmTimer =
+  null;
+
+let alarmContext =
+  null;
+
+let demoAlarmTimer =
+  null;
+
+let demoSafetyCheckActive =
+  false;
+
+const DEMO_ALARM_DELAY =
+  10 * 1000;
+
+// Real safety mode remains 5 minutes. The separate Demo 10s button
+// uses DEMO_ALARM_DELAY and does not change production behavior.
+const UNSAFE_INACTIVITY_TIME =
+  5 * 60 * 1000;
+
+const SAFETY_COUNTDOWN_TIME =
+  30;
+
+const MOVEMENT_THRESHOLD_METERS =
+  20;
 
 
 let reports =
@@ -402,7 +447,7 @@ function renderConnectivityZones() {
           color,
 
         fillOpacity:
-          0.31,
+          0.20,
 
         // IMPORTANT:
         // users can still click the map through the heatmap.
@@ -424,22 +469,26 @@ function renderConnectivityZones() {
 function invalidate() {
   revision++;
 
-
   rawRoutes =
     [];
 
+  scoredRoutes =
+    [];
+
+  selected =
+    null;
 
   routeLayer
     .clearLayers();
 
-
   $("routes")
     .replaceChildren();
-
 
   $("route-count")
     .textContent =
       "0 ROUTES";
+
+  renderSelectedRouteDetails();
 }
 
 
@@ -530,27 +579,442 @@ map.on(
 // ROUTE CARDS + ROUTE LINES
 // =====================================================
 
+function signedScore(value) {
+  if (!Number.isFinite(value)) {
+    return "N/A";
+  }
+
+  const rounded =
+    Math.round(value * 10) / 10;
+
+  return `${rounded > 0 ? "+" : ""}${rounded}`;
+}
+
+
+function routeDisplayName(route) {
+  const index =
+    scoredRoutes.findIndex(
+      item => item.id === route.id
+    );
+
+  return `Route ${index >= 0 ? index + 1 : 1}`;
+}
+
+
+function routeRecommendation(route) {
+  if (!scoredRoutes.length) {
+    return route.category;
+  }
+
+  const fastest =
+    Math.min(
+      ...scoredRoutes.map(
+        item => item.duration
+      )
+    );
+
+  if (route.id === scoredRoutes[0]?.id) {
+    return "Safest route";
+  }
+
+  if (route.duration === fastest) {
+    return "Fastest option";
+  }
+
+  return route.category;
+}
+
+
+function routeLineColor(route, active) {
+  if (active) {
+    return "#1a73e8";
+  }
+
+  if (route.score >= 75) {
+    return "#2a9d5b";
+  }
+
+  if (route.score >= 55) {
+    return "#d79a2b";
+  }
+
+  return "#c84a42";
+}
+
+
+function routeSafePlaces(route) {
+  return havens
+    .map(
+      place => ({
+        place,
+        routeDistance:
+          distanceToRoute(
+            place.position,
+            route.points
+          )
+      })
+    )
+    .filter(
+      item =>
+        item.routeDistance <= 300
+    )
+    .sort(
+      (a, b) => {
+        const aOpen =
+          havenStatus(a.place).state === "open"
+            ? 0
+            : 1;
+
+        const bOpen =
+          havenStatus(b.place).state === "open"
+            ? 0
+            : 1;
+
+        return (
+          aOpen - bOpen ||
+          a.routeDistance - b.routeDistance
+        );
+      }
+    );
+}
+
+
+function generateScoreExplanation(route) {
+  const reasons = [];
+  const cautions = [];
+  const breakdown = route.breakdown;
+
+  if (breakdown.safePlaces >= 10) {
+    reasons.push("several nearby public or trusted places");
+  }
+  else if (breakdown.safePlaces > 0) {
+    reasons.push("some nearby Safe Havens");
+  }
+
+  if (breakdown.lighting >= 10) {
+    reasons.push("strong mapped streetlight coverage");
+  }
+  else if (breakdown.lighting < 0) {
+    cautions.push("weaker lighting coverage");
+  }
+
+  if (breakdown.crime === 0) {
+    reasons.push("no scored recent crime penalty");
+  }
+  else if (breakdown.crime < 0) {
+    cautions.push("recent crime reports near the route");
+  }
+
+  if (breakdown.connectivity >= 5) {
+    reasons.push("stronger demo connectivity");
+  }
+  else if (breakdown.connectivity < 0) {
+    cautions.push("weaker demo connectivity");
+  }
+
+  if (breakdown.community > 0) {
+    reasons.push("positive community reports");
+  }
+  else if (breakdown.community < 0) {
+    cautions.push("community safety concerns");
+  }
+
+  const good =
+    reasons.length
+      ? reasons.slice(0, 3).join(", ")
+      : "the available route evidence";
+
+  const caution =
+    cautions.length
+      ? ` The main caution is ${cautions.slice(0, 2).join(" and ")}.`
+      : "";
+
+  return `This route scores ${route.score}/100 based on ${good}.${caution}`;
+}
+
+
+function renderSelectedRouteDetails() {
+  const container =
+    $("route-details");
+
+  const route =
+    scoredRoutes.find(
+      item => item.id === selected
+    );
+
+  if (!route) {
+    $("sheet-title").textContent =
+      "Choose a destination";
+
+    container.innerHTML = `
+      <div class="empty-route-details">
+        <div class="empty-icon">↗</div>
+        <h2>Plan a route to compare safety</h2>
+        <p>Search for a destination above, then choose among the available walking routes.</p>
+      </div>`;
+
+    return;
+  }
+
+  const name =
+    routeDisplayName(route);
+
+  $("sheet-title").textContent =
+    `${name} · ${Math.round(route.duration / 60)} min`;
+
+  container.replaceChildren();
+
+  const hero =
+    element("div", "", "detail-hero");
+
+  const heroText =
+    element("div");
+
+  heroText.append(
+    element("span", routeRecommendation(route).toUpperCase(), "sheet-kicker"),
+    element("h2", name),
+    element(
+      "div",
+      `${Math.round(route.duration / 60)} min · ${(route.distance / 1609.344).toFixed(1)} mi · ${(route.distance / 1000).toFixed(1)} km`,
+      "detail-meta"
+    )
+  );
+
+  hero.append(
+    heroText,
+    element("div", String(route.score), "detail-score")
+  );
+
+  container.append(hero);
+
+  const scoreSection =
+    element("section", "", "detail-section");
+
+  scoreSection.append(
+    element("h3", "Why this score?")
+  );
+
+  const scoreGrid =
+    element("div", "", "score-grid");
+
+  const scoreItems = [
+    ["Starting score", route.breakdown.base],
+    ["Safe places", route.breakdown.safePlaces],
+    ["Lighting", route.breakdown.lighting],
+    ["Recent crime", route.breakdown.crime],
+    ["Community reports", route.breakdown.community],
+    ["Connectivity", route.breakdown.connectivity]
+  ];
+
+  for (const [label, value] of scoreItems) {
+    const item =
+      element(
+        "div",
+        "",
+        `score-item ${value > 0 && label !== "Starting score" ? "positive" : value < 0 ? "negative" : ""}`
+      );
+
+    item.append(
+      element("span", label),
+      element(
+        "strong",
+        label === "Starting score"
+          ? String(value)
+          : signedScore(value)
+      )
+    );
+
+    scoreGrid.append(item);
+  }
+
+  scoreSection.append(
+    scoreGrid,
+    element(
+      "p",
+      generateScoreExplanation(route),
+      "explanation"
+    )
+  );
+
+  container.append(scoreSection);
+
+  const placeSection =
+    element("section", "", "detail-section");
+
+  placeSection.append(
+    element("h3", "Safe places near this route")
+  );
+
+  const placeList =
+    element("div", "", "place-list");
+
+  const nearbyPlaces =
+    routeSafePlaces(route)
+      .slice(0, 6);
+
+  if (!nearbyPlaces.length) {
+    placeList.append(
+      element(
+        "p",
+        havenKnown
+          ? "No mapped Safe Haven candidates were found within 300 m of this route."
+          : "Safe-place data is currently unavailable.",
+        "data-note"
+      )
+    );
+  }
+
+  for (const item of nearbyPlaces) {
+    const current =
+      havenStatus(item.place);
+
+    const row =
+      element("div", "", "place-row");
+
+    const text =
+      element("div");
+
+    text.append(
+      element("strong", item.place.name),
+      element(
+        "small",
+        `${pretty(item.place.type)} · ${Math.round(item.routeDistance)} m from route`
+      )
+    );
+
+    row.append(
+      text,
+      element(
+        "span",
+        current.label,
+        current.state === "open"
+          ? "status-open"
+          : current.state === "closed"
+            ? "status-closed"
+            : "status-unknown"
+      )
+    );
+
+    placeList.append(row);
+  }
+
+  placeSection.append(placeList);
+  container.append(placeSection);
+
+  const crimeSection =
+    element("section", "", "detail-section");
+
+  crimeSection.append(
+    element("h3", "Recent crime near this route")
+  );
+
+  const crimeList =
+    element("div", "", "crime-list");
+
+  const incidents =
+    route.evidence?.crimeIncidents || [];
+
+  if (!incidents.length) {
+    crimeList.append(
+      element(
+        "p",
+        route.unknown.includes("crime")
+          ? "Current crime data is unavailable for this route."
+          : "No classified recent incidents were returned within 150 m of this route.",
+        "data-note"
+      )
+    );
+  }
+
+  for (const incident of incidents.slice(0, 6)) {
+    const row =
+      element("div", "", "crime-row");
+
+    const text =
+      element("div");
+
+    text.append(
+      element("strong", pretty(incident.type)),
+      element(
+        "small",
+        `${Math.round(incident.routeDistance)} m from route · ${incident.daysAgo === 0 ? "today" : `${incident.daysAgo} day${incident.daysAgo === 1 ? "" : "s"} ago`}`
+      )
+    );
+
+    row.append(
+      text,
+      element(
+        "span",
+        signedScore(incident.points),
+        "status-closed"
+      )
+    );
+
+    crimeList.append(row);
+  }
+
+  crimeSection.append(
+    crimeList,
+    element(
+      "p",
+      "Crime data uses recent public Atlanta records returned by the existing ArcGIS source. Counts are route context, not a prediction of personal safety.",
+      "data-note"
+    )
+  );
+
+  container.append(crimeSection);
+
+  if (route.dataNotes?.length) {
+    const dataSection =
+      element("section", "", "detail-section");
+
+    dataSection.append(
+      element("h3", "Data notes")
+    );
+
+    for (const note of route.dataNotes) {
+      dataSection.append(
+        element("p", note, "data-note")
+      );
+    }
+
+    container.append(dataSection);
+  }
+}
+
+
+function selectRoute(routeId, shouldScroll = false) {
+  if (!scoredRoutes.some(route => route.id === routeId)) {
+    return;
+  }
+
+  selected = routeId;
+  drawRoutes();
+
+  if (shouldScroll) {
+    requestAnimationFrame(
+      () => {
+        $("routes")
+          .querySelector(`[data-route-id="${routeId}"]`)
+          ?.scrollIntoView({
+            behavior: "smooth",
+            inline: "center",
+            block: "nearest"
+          });
+      }
+    );
+  }
+}
+
+
 function drawRoutes() {
   const scrollLeft =
-    $("routes")
-      .scrollLeft;
+    $("routes").scrollLeft;
 
+  routeLayer.clearLayers();
+  $("routes").replaceChildren();
 
-  const focusedRoute =
-    document.activeElement
-      ?.dataset
-      ?.routeId;
-
-
-  routeLayer
-    .clearLayers();
-
-
-  $("routes")
-    .replaceChildren();
-
-
-  const scored =
+  scoredRoutes =
     rawRoutes
       .map(
         route =>
@@ -562,84 +1026,46 @@ function drawRoutes() {
           )
       )
       .sort(
-        (
-          a,
-          b
-        ) =>
-          b.score -
-            a.score ||
-
-          a.duration -
-            b.duration
+        (a, b) =>
+          b.score - a.score ||
+          a.duration - b.duration
       );
 
-
   if (
-    !scored.some(
-      route =>
-        route.id ===
-        selected
+    !scoredRoutes.some(
+      route => route.id === selected
     )
   ) {
     selected =
-      scored[0]
-        ?.id;
+      scoredRoutes[0]?.id || null;
   }
 
+  $("route-count").textContent =
+    `${scoredRoutes.length} ROUTE${scoredRoutes.length === 1 ? "" : "S"}`;
 
-  $("route-count")
-    .textContent =
-      `${scored.length} ROUTE${scored.length === 1 ? "" : "S"}`;
-
-
-  for (
-    const [
-      index,
-      route
-    ] of
-      scored.entries()
-  ) {
+  for (const route of scoredRoutes) {
     const active =
-      route.id ===
-      selected;
-
+      route.id === selected;
 
     const line =
       L.polyline(
         route.points,
         {
-          color:
-            active
-              ? "#217a59"
-              : "#83978d",
-
-          weight:
-            active
-              ? 7
-              : 5,
-
-          opacity:
-            active
-              ? 0.95
-              : 0.6
+          color: routeLineColor(route, active),
+          weight: active ? 7 : 5,
+          opacity: active ? 1 : .72
         }
       )
-        .addTo(
-          routeLayer
-        );
+        .addTo(routeLayer);
 
+    if (active) {
+      line.bringToFront();
+    }
 
     line.on(
       "click",
-      () => {
-        selected =
-          route.id;
-
-
-        drawRoutes();
-      }
+      () => selectRoute(route.id, true)
     );
-
 
     const card =
       element(
@@ -648,227 +1074,70 @@ function drawRoutes() {
         `route${active ? " selected" : ""}`
       );
 
-
-    card.dataset.routeId =
-      route.id;
-
-
-    card.setAttribute(
-      "aria-pressed",
-      String(
-        active
-      )
-    );
-
-
-    if (
-      index === 0
-    ) {
-      card.append(
-        element(
-          "div",
-          `↗ TOP SCORE${havenKnown ? "" : " · LIMITED PLACE DATA"}`,
-          "recommend"
-        )
-      );
-    }
-
+    card.type = "button";
+    card.dataset.routeId = route.id;
+    card.setAttribute("aria-pressed", String(active));
 
     const top =
-      element(
-        "div",
-        "",
-        "route-top"
-      );
-
+      element("div", "", "route-top");
 
     top.append(
-      element(
-        "span",
-        route.name,
-        "route-title"
-      )
+      element("span", routeDisplayName(route), "route-title")
     );
-
 
     const score =
-      element(
-        "span",
-        String(
-          route.score
-        ),
-        "route-score"
-      );
-
+      element("span", String(route.score), "route-score");
 
     score.append(
-      element(
-        "small",
-        " /100"
-      )
+      element("small", " /100")
     );
 
-
-    top.append(
-      score
-    );
-
-
-    card.append(
-      top
-    );
-
-
-    card.append(
-      element(
-        "div",
-        route.category,
-        "recommend"
-      )
-    );
-
-
-    const breakdown =
-      route.breakdown;
-
-
-    card.append(
-      element(
-        "div",
-        `Base 50 | Places +${breakdown.safePlaces} | Reports ${breakdown.community.toFixed(1)} | Lighting ${breakdown.lighting} | Crime ${breakdown.crime} | Connectivity ${breakdown.connectivity > 0 ? "+" : ""}${breakdown.connectivity}`,
-        "small"
-      )
-    );
-
-
-    for (
-      const note of
-        route.dataNotes ||
-        []
-    ) {
-      card.append(
-        element(
-          "div",
-          note,
-          "small"
-        )
-      );
-    }
-
-
-    if (
-      route.unknown.length
-    ) {
-      card.append(
-        element(
-          "div",
-          `Unknown: ${route.unknown.join(", ")}`,
-          "small"
-        )
-      );
-    }
-
-
-    card.append(
-      element(
-        "div",
-        `${Math.round(route.duration / 60)} min · ${(route.distance / 1000).toFixed(1)} km`,
-        "route-meta"
-      )
-    );
-
+    top.append(score);
 
     const metrics =
-      element(
-        "div",
-        "",
-        "metrics"
-      );
-
+      element("div", "", "metrics");
 
     metrics.append(
       element(
         "span",
-        `Safety ${route.safety}`
+        `${route.nearby} safe place${route.nearby === 1 ? "" : "s"}`,
+        "metric-pill"
       ),
-
-
       element(
         "span",
-        route.connectivity ===
-          null
+        route.connectivity === null
           ? "Connectivity N/A"
-          : `Connectivity ${route.connectivity > 0 ? "+" : ""}${route.connectivity}`
+          : `Connection ${signedScore(route.connectivity)}`,
+        "metric-pill"
       )
     );
 
-
     card.append(
+      top,
+      element("div", routeRecommendation(route), "recommend"),
+      element(
+        "div",
+        `${Math.round(route.duration / 60)} min · ${(route.distance / 1609.344).toFixed(1)} mi`,
+        "route-meta"
+      ),
       metrics
     );
 
-
-    card.append(
-      element(
-        "div",
-        `${route.nearby} nearby safe places · ${route.concerns} local concern${route.concerns === 1 ? "" : "s"}`,
-        "small"
-      )
-    );
-
-
     card.onclick =
-      () => {
-        selected =
-          route.id;
+      () => selectRoute(route.id, false);
 
-
-        drawRoutes();
-      };
-
-
-    $("routes")
-      .append(
-        card
-      );
+    $("routes").append(card);
   }
 
+  $("routes").scrollLeft = scrollLeft;
 
-  $("routes")
-    .scrollLeft =
-      scrollLeft;
+  $("routes-prev").disabled =
+    scoredRoutes.length < 2;
 
+  $("routes-next").disabled =
+    scoredRoutes.length < 2;
 
-  if (
-    focusedRoute
-  ) {
-    [
-      ...$("routes")
-        .children
-    ]
-      .find(
-        card =>
-          card.dataset
-            .routeId ===
-          focusedRoute
-      )
-      ?.focus({
-        preventScroll:
-          true
-      });
-  }
-
-
-  $("routes-prev")
-    .disabled =
-      scored.length <
-      2;
-
-
-  $("routes-next")
-    .disabled =
-      scored.length <
-      2;
+  renderSelectedRouteDetails();
 }
 
 
@@ -2565,72 +2834,684 @@ document
 
 
 // =====================================================
-// UNSAFE MENU
+// I FEEL UNSAFE MODE
 // =====================================================
+
+function updateUnsafeUI() {
+  document.body
+    .classList
+    .toggle(
+      "unsafe-mode",
+      unsafeMode
+    );
+
+  $("unsafe-actions")
+    .setAttribute(
+      "aria-hidden",
+      String(!unsafeMode)
+    );
+
+  $("unsafe-button")
+    .setAttribute(
+      "aria-pressed",
+      String(unsafeMode)
+    );
+
+  const label =
+    $("unsafe-button")
+      .querySelector(
+        ".unsafe-fab-label"
+      );
+
+  const icon =
+    $("unsafe-button")
+      .querySelector(
+        ".unsafe-fab-icon"
+      );
+
+  if (label) {
+    label.textContent =
+      unsafeMode
+        ? "Exit safety mode"
+        : "I feel unsafe";
+  }
+
+  if (icon) {
+    icon.textContent =
+      unsafeMode
+        ? "×"
+        : "◉";
+  }
+
+  if (!unsafeMode) {
+    $("unsafe-status").textContent = "";
+  }
+}
+
+
+function stopAlarm() {
+  clearInterval(
+    alarmTimer
+  );
+
+  alarmTimer =
+    null;
+
+  if (
+    navigator.vibrate
+  ) {
+    navigator.vibrate(0);
+  }
+}
+
+
+function alarmBeep() {
+  try {
+    if (!alarmContext) {
+      alarmContext =
+        new (
+          window.AudioContext ||
+          window.webkitAudioContext
+        )();
+    }
+
+    if (
+      alarmContext.state ===
+      "suspended"
+    ) {
+      alarmContext.resume();
+    }
+
+    const oscillator =
+      alarmContext.createOscillator();
+
+    const gain =
+      alarmContext.createGain();
+
+    oscillator.frequency.value =
+      880;
+
+    gain.gain.value =
+      0.035;
+
+    oscillator
+      .connect(gain)
+      .connect(
+        alarmContext.destination
+      );
+
+    oscillator.start();
+    oscillator.stop(
+      alarmContext.currentTime +
+      0.18
+    );
+  }
+
+  catch (
+    error
+  ) {
+    console.warn(
+      "Alarm audio unavailable:",
+      error
+    );
+  }
+}
+
+
+function startAlarm() {
+  stopAlarm();
+  alarmBeep();
+
+  alarmTimer =
+    setInterval(
+      alarmBeep,
+      900
+    );
+
+  if (
+    navigator.vibrate
+  ) {
+    navigator.vibrate([
+      350,
+      180,
+      350,
+      180,
+      700
+    ]);
+  }
+}
+
+
+function closeSafetyCheck() {
+  clearInterval(
+    safetyCountdownTimer
+  );
+
+  safetyCountdownTimer =
+    null;
+
+  demoSafetyCheckActive =
+    false;
+
+  stopAlarm();
+
+  if (
+    $("safety-check-dialog").open
+  ) {
+    $("safety-check-dialog")
+      .close();
+  }
+}
+
+
+function attemptEmergencyCall() {
+  closeSafetyCheck();
+
+  $("unsafe-status").textContent =
+    "Opening the phone emergency calling flow…";
+
+  window.location.href =
+    "tel:911";
+}
+
+
+function showEmergencyConfirmation() {
+  if (
+    !$("emergency-dialog").open
+  ) {
+    $("emergency-dialog")
+      .showModal();
+  }
+}
+
+
+function showSafetyCheck(
+  options = {}
+) {
+  const demo =
+    Boolean(options.demo);
+
+  if (
+    !unsafeMode ||
+    $("safety-check-dialog").open
+  ) {
+    return;
+  }
+
+  demoSafetyCheckActive =
+    demo;
+
+  const inactivitySeconds =
+    demo
+      ? Math.round(DEMO_ALARM_DELAY / 1000)
+      : Math.round(UNSAFE_INACTIVITY_TIME / 1000);
+
+  const inactivityLabel =
+    inactivitySeconds >= 60
+      ? `${Math.round(inactivitySeconds / 60)} minute${Math.round(inactivitySeconds / 60) === 1 ? "" : "s"}`
+      : `${inactivitySeconds} seconds`;
+
+  $("safety-check-message").textContent =
+    demo
+      ? `DEMO: No meaningful movement has been detected for ${inactivityLabel}. This demo will not automatically place a 911 call.`
+      : `No meaningful movement has been detected for ${inactivityLabel}.`;
+
+  let remaining =
+    SAFETY_COUNTDOWN_TIME;
+
+  $("safety-countdown").textContent =
+    String(remaining);
+
+  $("safety-check-dialog")
+    .showModal();
+
+  startAlarm();
+
+  safetyCountdownTimer =
+    setInterval(
+      () => {
+        remaining--;
+
+        $("safety-countdown").textContent =
+          String(
+            Math.max(
+              0,
+              remaining
+            )
+          );
+
+        if (
+          remaining <= 0
+        ) {
+          clearInterval(
+            safetyCountdownTimer
+          );
+
+          safetyCountdownTimer =
+            null;
+
+          if (demoSafetyCheckActive) {
+            $("safety-check-message").textContent =
+              "DEMO complete: the real app would now move into its emergency call flow. No automatic 911 call was placed.";
+
+            $("unsafe-status").textContent =
+              "Demo safety check triggered successfully";
+
+            return;
+          }
+
+          attemptEmergencyCall();
+        }
+      },
+      1000
+    );
+}
+
+function resetInactivityTimer() {
+  clearTimeout(
+    inactivityTimer
+  );
+
+  inactivityTimer =
+    null;
+
+  if (!unsafeMode) {
+    return;
+  }
+
+  inactivityTimer =
+    setTimeout(
+      showSafetyCheck,
+      UNSAFE_INACTIVITY_TIME
+    );
+}
+
+
+function handleSafetyPosition(
+  position
+) {
+  if (!unsafeMode) {
+    return;
+  }
+
+  const current = [
+    position.coords.latitude,
+    position.coords.longitude
+  ];
+
+  originMarker
+    .setLatLng(current)
+    .addTo(map);
+
+  if (!safetyLastPosition) {
+    safetyLastPosition =
+      current;
+
+    resetInactivityTimer();
+
+    return;
+  }
+
+  const moved =
+    distance(
+      safetyLastPosition,
+      current
+    );
+
+  if (
+    moved >=
+    MOVEMENT_THRESHOLD_METERS
+  ) {
+    safetyLastPosition =
+      current;
+
+    resetInactivityTimer();
+
+    if (
+      $("safety-check-dialog").open
+    ) {
+      closeSafetyCheck();
+    }
+
+    $("unsafe-status").textContent =
+      `Movement detected · safety timer reset`;
+  }
+}
+
+
+function startSafetyTracking() {
+  if (
+    !navigator.geolocation
+  ) {
+    $("unsafe-status").textContent =
+      "Location monitoring is not supported, so the inactivity timer is paused.";
+
+    return;
+  }
+
+  if (
+    safetyWatchId !== null
+  ) {
+    navigator.geolocation
+      .clearWatch(
+        safetyWatchId
+      );
+  }
+
+  safetyLastPosition =
+    null;
+
+  safetyWatchId =
+    navigator.geolocation
+      .watchPosition(
+        handleSafetyPosition,
+        error => {
+          console.warn(
+            "Safety location error:",
+            error
+          );
+
+          clearTimeout(
+            inactivityTimer
+          );
+
+          inactivityTimer =
+            null;
+
+          $("unsafe-status").textContent =
+            "Location monitoring is unavailable, so the inactivity timer is paused.";
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 5000,
+          timeout: 15000
+        }
+      );
+}
+
+
+function stopSafetyTracking() {
+  if (
+    safetyWatchId !== null &&
+    navigator.geolocation
+  ) {
+    navigator.geolocation
+      .clearWatch(
+        safetyWatchId
+      );
+  }
+
+  safetyWatchId =
+    null;
+
+  safetyLastPosition =
+    null;
+
+  clearTimeout(
+    inactivityTimer
+  );
+
+  inactivityTimer =
+    null;
+
+  closeSafetyCheck();
+}
+
+
+function setSheetExpanded(
+  expanded
+) {
+  const sheet =
+    $("route-options");
+
+  sheet
+    .classList
+    .toggle(
+      "expanded",
+      expanded
+    );
+
+  $("sheet-handle")
+    .setAttribute(
+      "aria-expanded",
+      String(expanded)
+    );
+}
+
+
+function stopDemoAlarm() {
+  clearTimeout(
+    demoAlarmTimer
+  );
+
+  demoAlarmTimer =
+    null;
+
+  const button =
+    $("demo-alarm-button");
+
+  if (button) {
+    button.disabled =
+      false;
+
+    button.classList
+      .remove("running");
+
+    button.innerHTML =
+      '<span aria-hidden="true">▶</span><strong>Demo 10s</strong>';
+  }
+}
+
+
+function startDemoAlarm() {
+  if (!unsafeMode) {
+    enterUnsafeMode();
+  }
+
+  stopDemoAlarm();
+
+  const button =
+    $("demo-alarm-button");
+
+  button.disabled =
+    true;
+
+  button.classList
+    .add("running");
+
+  button.innerHTML =
+    '<span aria-hidden="true">●</span><strong>Alarm in 10s</strong>';
+
+  $("unsafe-status").textContent =
+    "DEMO active · safety alarm will trigger in 10 seconds";
+
+  demoAlarmTimer =
+    setTimeout(
+      () => {
+        demoAlarmTimer =
+          null;
+
+        if (!unsafeMode) {
+          stopDemoAlarm();
+          return;
+        }
+
+        if (button) {
+          button.disabled =
+            false;
+
+          button.classList
+            .remove("running");
+
+          button.innerHTML =
+            '<span aria-hidden="true">▶</span><strong>Demo 10s</strong>';
+        }
+
+        showSafetyCheck({
+          demo: true
+        });
+      },
+      DEMO_ALARM_DELAY
+    );
+}
+
+
+function enterUnsafeMode() {
+  if (unsafeMode) {
+    return;
+  }
+
+  unsafeMode =
+    true;
+
+  setSheetExpanded(false);
+  updateUnsafeUI();
+
+  // Create/resume the audio context from a user gesture so
+  // a later safety alarm has the best chance of being audible.
+  try {
+    if (!alarmContext) {
+      alarmContext =
+        new (
+          window.AudioContext ||
+          window.webkitAudioContext
+        )();
+    }
+
+    alarmContext.resume?.();
+  }
+  catch {}
+
+  startSafetyTracking();
+
+  $("unsafe-status").textContent =
+    "Safety mode active · movement monitoring started";
+}
+
+
+function exitUnsafeMode() {
+  unsafeMode =
+    false;
+
+  stopDemoAlarm();
+  stopSafetyTracking();
+  updateUnsafeUI();
+}
+
 
 $("unsafe-button")
   .onclick =
+    () => {
+      if (unsafeMode) {
+        exitUnsafeMode();
+      }
+      else {
+        enterUnsafeMode();
+      }
+    };
+
+
+$("demo-alarm-button")
+  .onclick =
+    startDemoAlarm;
+
+
+$("call-911")
+  .onclick =
+    showEmergencyConfirmation;
+
+
+$("cancel-911")
+  .onclick =
     () =>
-      $("unsafe-dialog")
-        .showModal();
+      $("emergency-dialog")
+        .close();
 
 
-if (
-  $("phone-unsafe")
-) {
-  $("phone-unsafe")
-    .onclick =
-      () =>
-        $("unsafe-dialog")
-          .showModal();
-}
+$("confirm-911")
+  .onclick =
+    () => {
+      $("emergency-dialog")
+        .close();
+
+      attemptEmergencyCall();
+    };
+
+
+$("safety-call-911")
+  .onclick =
+    () => {
+      if (demoSafetyCheckActive) {
+        closeSafetyCheck();
+        resetInactivityTimer();
+
+        $("unsafe-status").textContent =
+          "DEMO: emergency action shown, but 911 was not called";
+
+        return;
+      }
+
+      attemptEmergencyCall();
+    };
+
+
+$("im-safe")
+  .onclick =
+    () => {
+      closeSafetyCheck();
+      resetInactivityTimer();
+
+      $("unsafe-status").textContent =
+        "Safety check cleared · monitoring continues";
+    };
+
+
+$("safety-check-dialog")
+  .addEventListener(
+    "cancel",
+    event => {
+      event.preventDefault();
+    }
+  );
 
 
 $("nearest")
   .onclick =
     async () => {
-      $("nearest")
-        .disabled =
-          true;
+      $("nearest").disabled =
+        true;
 
+      $("unsafe-status").textContent =
+        "Finding an open Safe Haven…";
 
       try {
         const point =
           await locate();
-
 
         const places =
           await loadHavens(
             point
           );
 
-
         const eligible =
           places.filter(
             place =>
               havenStatus(
                 place
-              ).points >
-              0
+              ).state ===
+              "open"
           );
 
-
-        if (
-          !eligible.length
-        ) {
+        if (!eligible.length) {
           throw new Error(
-            "No Safe Haven found nearby."
+            "No Safe Haven with confirmed open hours was found nearby."
           );
         }
-
 
         const nearest =
           [...eligible]
             .sort(
-              (
-                a,
-                b
-              ) =>
+              (a, b) =>
                 distance(
                   point,
                   a.position
@@ -2641,29 +3522,29 @@ $("nearest")
                 )
             )[0];
 
+        updateOrigin(point);
 
         setTarget(
           nearest.position,
           nearest.name
         );
 
+        $("unsafe-status").textContent =
+          `${nearest.name} selected · calculating route`;
 
-        $("unsafe-dialog")
-          .close();
+        $("plan").click();
       }
 
       catch (
         error
       ) {
-        $("unsafe-status")
-          .textContent =
-            error.message;
+        $("unsafe-status").textContent =
+          error.message;
       }
 
       finally {
-        $("nearest")
-          .disabled =
-            false;
+        $("nearest").disabled =
+          false;
       }
     };
 
@@ -2675,53 +3556,33 @@ $("nearest")
 $("fake-call")
   .onclick =
     () => {
-      $("unsafe-dialog")
-        .close();
-
-
       $("call-dialog")
         .showModal();
-
 
       let seconds =
         0;
 
-
-      $("call-time")
-        .textContent =
-          "00:00";
-
+      $("call-time").textContent =
+        "00:00";
 
       clearInterval(
         callTimer
       );
-
 
       callTimer =
         setInterval(
           () => {
             seconds++;
 
-
-            $("call-time")
-              .textContent =
-                `${String(
-                  Math.floor(
-                    seconds /
-                    60
-                  )
-                ).padStart(
-                  2,
-                  "0"
-                )}:${String(
-                  seconds %
-                  60
-                ).padStart(
-                  2,
-                  "0"
-                )}`;
+            $("call-time").textContent =
+              `${String(
+                Math.floor(
+                  seconds / 60
+                )
+              ).padStart(2, "0")}:${String(
+                seconds % 60
+              ).padStart(2, "0")}`;
           },
-
           1000
         );
     };
@@ -2734,66 +3595,252 @@ $("end-call")
         callTimer
       );
 
-
       $("call-dialog")
         .close();
     };
 
 
 // =====================================================
-// RESPONSIVE MAP
+// ROUTE BOTTOM SHEET
 // =====================================================
 
-const phoneLayout =
-  window.matchMedia(
-    "(max-width: 700px)"
+const routeSheet =
+  $("route-options");
+
+const sheetHandle =
+  $("sheet-handle");
+
+let sheetDragStartY =
+  0;
+
+let sheetDragStartOffset =
+  0;
+
+let sheetDragging =
+  false;
+
+
+function sheetCollapsedOffset() {
+  const collapsed =
+    parseFloat(
+      getComputedStyle(
+        document.documentElement
+      )
+        .getPropertyValue(
+          "--sheet-collapsed"
+        )
+    ) ||
+    198;
+
+  return Math.max(
+    0,
+    routeSheet
+      .getBoundingClientRect()
+      .height -
+      collapsed
   );
-
-
-const mapSlot =
-  document.createComment(
-    "Desktop map position"
-  );
-
-
-$("map-section")
-  .before(
-    mapSlot
-  );
-
-
-function arrangeMap() {
-  if (
-    phoneLayout.matches
-  ) {
-    $("route-options")
-      .before(
-        $("map-section")
-      );
-  }
-
-  else {
-    mapSlot.after(
-      $("map-section")
-    );
-  }
-
-
-  map.invalidateSize({
-    pan:
-      false
-  });
 }
 
 
-phoneLayout
+function applySheetDrag(
+  offset
+) {
+  const clamped =
+    Math.max(
+      0,
+      Math.min(
+        sheetCollapsedOffset(),
+        offset
+      )
+    );
+
+  const desktop =
+    window.matchMedia(
+      "(min-width: 900px)"
+    ).matches;
+
+  routeSheet.style.transform =
+    desktop
+      ? `translate(0, ${clamped}px)`
+      : `translate(-50%, ${clamped}px)`;
+}
+
+
+sheetHandle
   .addEventListener(
-    "change",
-    arrangeMap
+    "pointerdown",
+    event => {
+      sheetDragging =
+        true;
+
+      sheetDragStartY =
+        event.clientY;
+
+      sheetDragStartOffset =
+        routeSheet.classList
+          .contains("expanded")
+          ? 0
+          : sheetCollapsedOffset();
+
+      routeSheet.classList
+        .add("dragging");
+
+      sheetHandle
+        .setPointerCapture(
+          event.pointerId
+        );
+    }
   );
 
 
-arrangeMap();
+sheetHandle
+  .addEventListener(
+    "pointermove",
+    event => {
+      if (!sheetDragging) {
+        return;
+      }
+
+      applySheetDrag(
+        sheetDragStartOffset +
+        event.clientY -
+        sheetDragStartY
+      );
+    }
+  );
+
+
+function finishSheetDrag(
+  event
+) {
+  if (!sheetDragging) {
+    return;
+  }
+
+  sheetDragging =
+    false;
+
+  routeSheet.classList
+    .remove("dragging");
+
+  const movement =
+    event.clientY -
+    sheetDragStartY;
+
+  routeSheet.style.transform =
+    "";
+
+  if (
+    Math.abs(movement) < 12
+  ) {
+    setSheetExpanded(
+      !routeSheet.classList
+        .contains("expanded")
+    );
+  }
+  else {
+    setSheetExpanded(
+      movement < 0
+    );
+  }
+}
+
+
+sheetHandle
+  .addEventListener(
+    "pointerup",
+    finishSheetDrag
+  );
+
+
+sheetHandle
+  .addEventListener(
+    "pointercancel",
+    finishSheetDrag
+  );
+
+
+sheetHandle
+  .addEventListener(
+    "keydown",
+    event => {
+      if (
+        event.key === "Enter" ||
+        event.key === " "
+      ) {
+        event.preventDefault();
+
+        setSheetExpanded(
+          !routeSheet.classList
+            .contains("expanded")
+        );
+      }
+    }
+  );
+
+
+let routeScrollTimer =
+  null;
+
+
+$("routes")
+  .addEventListener(
+    "scroll",
+    () => {
+      clearTimeout(
+        routeScrollTimer
+      );
+
+      routeScrollTimer =
+        setTimeout(
+          () => {
+            const container =
+              $("routes");
+
+            const center =
+              container.scrollLeft +
+              container.clientWidth / 2;
+
+            const cards = [
+              ...container.children
+            ];
+
+            const nearestCard =
+              cards
+                .map(
+                  card => ({
+                    card,
+                    distance:
+                      Math.abs(
+                        card.offsetLeft +
+                        card.offsetWidth / 2 -
+                        center
+                      )
+                  })
+                )
+                .sort(
+                  (a, b) =>
+                    a.distance -
+                    b.distance
+                )[0]
+                ?.card;
+
+            if (
+              nearestCard &&
+              nearestCard.dataset.routeId !==
+              selected
+            ) {
+              selectRoute(
+                nearestCard.dataset.routeId,
+                false
+              );
+            }
+          },
+          130
+        );
+    },
+    { passive: true }
+  );
 
 
 // =====================================================

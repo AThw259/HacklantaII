@@ -41,17 +41,44 @@ export function crimeEvidence(route,features,now=Date.now()){
  const incidents=new Map();
  for(const f of features){
   const a=f.attributes||{},p=position(f),age=now-a.ReportDate;
-  if(!Number.isFinite(a.ReportDate)||age<0||age>30*86400000||!p.every(Number.isFinite)||distanceToRoute(p,route.points)>150)continue;
+  const routeDistance=p.every(Number.isFinite)?distanceToRoute(p,route.points):Infinity;
+  if(!Number.isFinite(a.ReportDate)||age<0||age>30*86400000||!p.every(Number.isFinite)||routeDistance>150)continue;
   const id=a.IncidentNumber||a.OBJECTID;
   if(id==null)continue;
   const offense=classifyCrime(a);
+  const candidate={
+   offense,
+   position:p,
+   reportDate:a.ReportDate,
+   routeDistance,
+   label:String(a.NIBRS_Offense||offense?.type||'Crime report')
+  };
   const previous=incidents.get(id);
-  if(!incidents.has(id)||offense&&(previous===null||offense.points<previous.points))incidents.set(id,offense);
+  if(!previous || (offense && (!previous.offense || offense.points<previous.offense.points)))incidents.set(id,candidate);
  }
- const known=[...incidents.values()].filter(Boolean),unclassified=incidents.size-known.length;
- const crimePoints=known.length?known.reduce((sum,r)=>sum+r.points,0):undefined;
- const counts={};for(const r of known)counts[r.type]=(counts[r.type]||0)+1;
- return {crimePoints,note:`${incidents.size} distinct incidents in 30 days within 150 m. Crime penalty: ${crimePoints??'unknown'}. ${Object.entries(counts).map(([type,n])=>`${type.replaceAll('_',' ')}: ${n}`).join(', ')}${unclassified?` ${unclassified} unclassified incidents (not scored).`:''} Highest penalty per incident; report dates used.`};
+ const values=[...incidents.values()];
+ const known=values.filter(item=>item.offense),unclassified=values.length-known.length;
+ const crimePoints=known.length?known.reduce((sum,item)=>sum+item.offense.points,0):undefined;
+ const counts={};for(const item of known)counts[item.offense.type]=(counts[item.offense.type]||0)+1;
+ const crimeIncidents=known
+  .sort((a,b)=>a.routeDistance-b.routeDistance||b.reportDate-a.reportDate)
+  .slice(0,8)
+  .map(item=>({
+   type:item.offense.type,
+   label:item.label,
+   points:item.offense.points,
+   position:item.position,
+   routeDistance:item.routeDistance,
+   reportDate:item.reportDate,
+   daysAgo:Math.max(0,Math.floor((now-item.reportDate)/86400000))
+  }));
+ return {
+  crimePoints,
+  crimeCount:incidents.size,
+  crimeCounts:counts,
+  crimeIncidents,
+  note:`${incidents.size} distinct incidents in 30 days within 150 m. Crime penalty: ${crimePoints??'unknown'}. ${Object.entries(counts).map(([type,n])=>`${type.replaceAll('_',' ')}: ${n}`).join(', ')}${unclassified?` ${unclassified} unclassified incidents (not scored).`:''} Highest penalty per incident; report dates used.`
+ };
 }
 export async function loadRouteEvidence(routes,now=Date.now()){
  const points=routes.flatMap(r=>r.points),lats=points.map(p=>p[0]),lons=points.map(p=>p[1]);
@@ -65,6 +92,12 @@ export async function loadRouteEvidence(routes,now=Date.now()){
  return routes.map(route=>{
   const light=results[0].status==='fulfilled'?lightingEvidence(route,results[0].value):{note:'Streetlight data unavailable or incomplete; lighting unknown.'};
   const crime=results[1].status==='fulfilled'?crimeEvidence(route,results[1].value,now):{note:'Crime data unavailable or incomplete; crime unknown.'};
-  return {...route,evidence:{lighting:light.lighting,crimePoints:crime.crimePoints},dataNotes:[light.note,crime.note]};
+  return {...route,evidence:{
+   lighting:light.lighting,
+   crimePoints:crime.crimePoints,
+   crimeCount:crime.crimeCount,
+   crimeCounts:crime.crimeCounts,
+   crimeIncidents:crime.crimeIncidents
+  },dataNotes:[light.note,crime.note]};
  });
 }
