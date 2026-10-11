@@ -10,8 +10,7 @@ Final Safety Score =
 + Streetlight Points
 + Safe Place Points
 + Crime Points
-+ Community Report Points
-+ Internet / Cox Connectivity Points
++ Internet / Connectivity Points
 ```
 
 Final score is capped between **0 and 100**.
@@ -65,28 +64,7 @@ Crime uses a simple **1-5 risk level**. The penalty is the negative of the risk 
 
 For each route, count only distinct eligible incidents within **150 m**. Risk levels **1-2** are counted only for the most recent **7 days**, risk level **3** for the most recent **14 days**, and risk levels **4-5** for the most recent **30 days**. If a single incident contains multiple eligible offenses, count only its highest risk level. The **combined crime deduction remains capped at -25 points** so crime stays important without overwhelming lighting, safe places, and connectivity. Future-dated records, records outside the severity-specific time window, and unrecognized offenses are not scored. Shooting requires an explicit shooting description, not merely firearm involvement.
 
-## 4. Community Reports
-
-| Report Type / Condition | Points |
-|---|---:|
-| Positive feedback / no negative reports | +5 |
-| No reports | 0 |
-| Poor lighting | -3 |
-| Isolated area | -5 |
-| Blocked sidewalk / construction | -2 |
-| Harassment | -10 |
-| Multiple negative reports | Up to -15 |
-
-Suggested time weighting:
-
-| Report Age | Weight |
-|---|---:|
-| Less than 24 hours | 100% |
-| 1–7 days | 75% |
-| 7–30 days | 40% |
-| More than 30 days | Ignore |
-
-## 5. Internet / Cox Connectivity
+## 5. Internet / Connectivity
 
 | Condition | Points |
 |---|---:|
@@ -95,8 +73,6 @@ Suggested time weighting:
 | Average connectivity | 0 |
 | Weak connectivity | -5 |
 | Very weak / dead zone | -10 |
-
-For the hackathon MVP, Cox connectivity data should be labeled as demo data unless a verified Cox dataset or API is available.
 
 ## Final Score Categories
 
@@ -117,8 +93,7 @@ Starting Score        50
 Streetlights         +10
 Safe Places          +10
 Crime                 -5
-Community Reports    -10
-Cox Connectivity      +5
+Connectivity      +5
                      ----
 Final Score           60
 ```
@@ -130,8 +105,7 @@ Starting Score        50
 Streetlights         +15
 Safe Places          +15
 Crime                 -3
-Community Reports      0
-Cox Connectivity     +10
+Connectivity     +10
                      ----
 Final Score           87
 ```
