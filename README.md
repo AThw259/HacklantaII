@@ -104,36 +104,6 @@ When the user presses the **Safe Place** button, Buddy Walk identifies the **nea
 
 The user does not need to manually enter a destination or search through a list of places.
 
-### Source
-
-Safe places come from:
-
-- **OpenStreetMap**
-- **Overpass API**
-
-Links:
-
-- https://www.openstreetmap.org/
-- https://overpass-api.de/
-
-Because public Overpass servers can sometimes be unavailable or rate-limited, Buddy Walk can try multiple endpoints instead of depending on only one server.
-
----
-
-### Source
-
-Safe places come from:
-
-- **OpenStreetMap**
-- **Overpass API**
-
-Links:
-
-- https://www.openstreetmap.org/
-- https://overpass-api.de/
-
-Because public Overpass servers can sometimes be unavailable or rate-limited, Buddy Walk can try multiple endpoints instead of depending on only one server.
-
 ---
 
 ## Virtual Call
@@ -188,14 +158,30 @@ Small GPS changes are ignored so normal location drift is not treated as real mo
 Monitoring automatically stops when the user reaches the destination.
 
 ---
-
 # Safety Score Criteria
 
-## 1. Safe Places — up to +15 points
+Buddy Walk gives each route a **Safety Score from 0 to 100**.
 
-Buddy Walk rewards routes that pass near public places that may provide help, people, staff, lighting, or a place to stop.
+Every route begins with a base score of:
 
-Only places close enough to the selected route contribute to the score.
+**50 points**
+
+The score is then adjusted using four factors:
+
+- Safe Places
+- Streetlight Coverage
+- Crime / Incident Risk
+- Connectivity
+
+The final score is limited to the range **0–100**.
+
+---
+
+## 1. Safe Places
+
+Buddy Walk rewards routes that pass near public places that may provide access to staff, other people, shelter, lighting, or assistance.
+
+Only safe places within approximately **200 meters of the selected route** contribute to the Safety Score.
 
 ### Safe Place Rating
 
@@ -207,117 +193,86 @@ Only places close enough to the selected route contribute to the score.
 | +2 | Pharmacy, Supermarket |
 | +1 | Convenience store, Restaurant, Cafe, Transit station |
 
-These values are Buddy Walk's own scoring weights for the hackathon. They are **not official OpenStreetMap safety ratings**.
-
 ### How Safe Place Points Are Calculated
 
-Only safe places within approximately **200 meters of the route** contribute to the score.
+Buddy Walk first checks whether a safe place is close enough to the selected route.
 
-For each place:
+The score also considers whether the location is usable.
 
-```text
-Private / restricted access:
-0 points
+- Private or restricted-access location: **0 points**
+- Confirmed open location: **full points**
+- Opening hours unknown: approximately **60% of the normal points**, with a minimum of 1 point
+- Confirmed closed location: **0 points**
 
-Confirmed open:
-full points
+For example, if a route passes near:
 
-Opening hours unknown:
-about 60% of the normal points,
-with a minimum of 1 point
+- 1 hospital: **+5**
+- 1 library: **+3**
+- 2 cafes: **+1 each**
 
-Confirmed closed:
-0 points
-```
+The route receives:
 
-Then:
+**5 + 3 + 1 + 1 = 10 safe-place points**
 
-```text
-Safe Place Score =
-sum of eligible place points
-```
 
-The result is capped:
+### Safe Place Data Source
 
-```text
-Maximum Safe Place Score = +15
-```
+Safe-place locations are retrieved using:
 
-### Source
-
-Safe-place locations are retrieved from:
-
-- OpenStreetMap
-- Overpass API
-
+- **OpenStreetMap**: https://www.openstreetmap.org/
 ---
 
-## 2. Streetlight Coverage — 0 to +15 points
+## 2. Streetlight Coverage
 
-Buddy Walk checks how much of the walking route passes near mapped streetlights.
+Buddy Walk estimates how much of a walking route passes near mapped streetlights.
 
-### Source
+Routes with better streetlight coverage receive more points.
 
-Streetlight locations come from the **City of Atlanta street-light ArcGIS layer**:
-
-https://services5.arcgis.com/5RxyIIJ9boPdptdo/ArcGIS/rest/services/COA_Street_lights/FeatureServer/0
-
-### How Lighting Is Calculated
-
-Buddy Walk samples points along the route.
-
-For each sample point, the app checks whether a mapped streetlight is nearby.
-
-Conceptually:
-
-```text
-Lighting Coverage =
-route distance near mapped streetlights
----------------------------------------
-total sampled route distance
-```
-
-### Lighting Score
+### Streetlight Rating
 
 | Streetlight Coverage | Points |
 |---|---:|
 | 80% or more | +15 |
 | 50%–79% | +10 |
 | 20%–49% | +5 |
-| Below 20% / insufficient data | 0 |
+| Below 20% | 0 |
 
-### Example
+### How Streetlight Coverage Is Calculated
 
-```text
-Route length sampled = 1,000 m
-Route length near mapped lights = 720 m
+Buddy Walk samples multiple positions along the selected walking route.
 
-Lighting Coverage =
-720 / 1000
-= 72%
+For each sampled location, the system checks whether a mapped streetlight is located nearby.
 
-Lighting Score = +10
-```
+The percentage of the route that is close to streetlights becomes the estimated **Streetlight Coverage**.
 
-### Limitation
+For example:
 
-A mapped streetlight does not guarantee that:
+- Total sampled route length: **1,000 meters**
+- Route near mapped streetlights: **720 meters**
 
-- it is currently working
-- it is bright enough
-- the surrounding area is actually well illuminated
+Streetlight coverage is approximately:
 
-Buddy Walk therefore treats this factor as a **streetlight-proximity estimate**, not a live measurement of brightness.
+**720 / 1000 = 72%**
+
+According to the scoring table, a route with **72% streetlight coverage** receives:
+
+**+10 points**
+
+### Streetlight Data Source
+
+Streetlight locations come from the **City of Atlanta public ArcGIS streetlight dataset**:https://www.arcgis.com/apps/mapviewer/index.html?url=https://services5.arcgis.com/5RxyIIJ9boPdptdo/ArcGIS/rest/services/COA_Street_lights/FeatureServer/0&source=sd.
 
 ---
 
-## 3. Crime / Incident Risk — 0 to -25 points
+## 3. Crime / Incident Risk 
 
-Buddy Walk checks recent crime records close to the selected route.
+Buddy Walk checks recent crime and incident records near each route.
 
-Crime incidents are grouped into five risk levels.
+Only incidents located within approximately **150 meters of the route** are considered.
 
-More serious incidents remain relevant for a longer time window.
+Incidents are divided into five custom risk levels.
+
+More serious incidents receive a larger penalty and remain relevant for a longer period.
 
 ### Crime Rating
 
@@ -329,110 +284,65 @@ More serious incidents remain relevant for a longer time window.
 | 4 | -4 | Last 30 days | Robbery, Aggravated assault, Weapons offense |
 | 5 | -5 | Last 30 days | Shooting, Sexual offense, Kidnapping, Homicide |
 
-### Why Different Time Windows?
+These risk levels are **Buddy Walk's custom hackathon classification**. They are not official Atlanta Police Department severity ratings.
+
+### Why Different Time Windows Are Used
+
+Lower-level incidents are only considered for a shorter period, while more serious incidents remain relevant for longer.
 
 Buddy Walk uses:
 
-```text
-Risk 1–2:
-count only incidents from the last 7 days
+- Risk Levels 1–2: incidents from the **last 7 days**
+- Risk Level 3: incidents from the **last 14 days**
+- Risk Levels 4–5: incidents from the **last 30 days**
 
-Risk 3:
-count only incidents from the last 14 days
-
-Risk 4–5:
-count incidents from the last 30 days
-```
-
-This prevents older low-level incidents from affecting the score for too long while allowing recent serious incidents to remain relevant longer.
+This prevents older lower-risk incidents from affecting a route indefinitely while still giving recent serious incidents a stronger influence on the Safety Score.
 
 ### How Crime Points Are Calculated
 
-Only incidents within approximately **150 meters of the route** are considered.
+Each eligible incident receives a penalty based on its risk level.
 
-For each eligible incident:
+For example:
 
-```text
-Penalty = -Risk Level
-```
+- 1 theft: **-2**
+- 1 simple assault: **-3**
+- 1 robbery: **-4**
 
-Example:
+The total penalty would be:
 
-```text
-1 theft
-= -2
+**-2 - 3 - 4 = -9 points**
 
-1 simple assault
-= -3
+If a single incident contains several offense descriptions, Buddy Walk counts only the **highest-risk eligible offense** for that incident.
 
-1 robbery
-= -4
+This helps prevent the same incident from being counted multiple times.
 
-Total crime penalty
-= -9
-```
+### Crime Data Source
 
-If one incident contains several offense descriptions, Buddy Walk counts only the **highest-risk eligible offense** for that incident.
-
-The total deduction is capped at:
-
-```text
-Maximum Crime Penalty = -25
-```
-
-So:
-
-```text
-Crime Score =
-max(-25, total eligible crime penalty)
-```
-
-This keeps crime important without allowing one dense cluster of records to completely overwhelm every other factor.
-
-### Source
-
-Crime data comes from Atlanta's public ArcGIS crime dataset:
-
-https://services3.arcgis.com/Et5Qfajgiyosiw4d/arcgis/rest/services/OpenDataWebsite_Crime_view/FeatureServer/0
-
-The dataset includes information such as:
+Crime data comes from **Atlanta's public ArcGIS crime dataset**: https://www.arcgis.com/apps/dashboards/af4a3506502f4e9fa81b2b3f63c61397#
+The dataset provides information such as:
 
 - report date
 - offense description
-- crime classification/code
+- crime classification or code
 - incident identifier
 - location information
 
-The Buddy Walk 1–5 risk scale is a **custom hackathon classification**, not an official Atlanta Police Department severity score.
+Buddy Walk uses this public information to determine whether recent incidents occurred close to a proposed route.
 
 ---
 
 ## 4. Connectivity — -10 to +10 points
 
-Buddy Walk includes a connectivity layer to demonstrate how network access could contribute to safety-aware navigation.
+Buddy Walk includes connectivity as an additional route factor.
 
-A stronger connection may help the user:
+A stronger network connection may help users:
 
-- make a call
-- send a message
+- make phone or internet calls
+- send messages
 - load maps
-- contact emergency services
-- use online safety tools
-
-### Current Data Source
-
-The connectivity layer is **synthetic demo data**.
-
-It is not official Cox coverage information.
-
-The demo model gives stronger values around places such as:
-
-- university areas
-- dense residential areas
-- mixed-use areas
-- busier urban regions
-
-and weaker values in selected areas to create realistic variation.
+- access online safety tools
+- communicate with friends or family
+- access emergency information
 
 ### Connectivity Rating
 
@@ -452,137 +362,146 @@ and weaker values in selected areas to create realistic variation.
 
 ### How Connectivity Is Calculated
 
-Buddy Walk samples multiple positions along the route.
+Buddy Walk samples multiple locations along a route and calculates the average connectivity value.
 
-Example:
+For example, suppose five sampled locations have these connectivity values:
 
-```text
-Sample scores:
-6, 7, 5, 8, 4
-```
+- 6
+- 7
+- 5
+- 8
+- 4
 
-Then:
+The average is:
 
-```text
-Average =
-(6 + 7 + 5 + 8 + 4) / 5
-= 6
-```
+**(6 + 7 + 5 + 8 + 4) / 5 = 6**
 
-So:
+The route therefore receives:
 
-```text
-Connectivity Score = +6
-```
+**Connectivity Score = +6**
 
-The final connectivity value is limited to:
+The connectivity contribution is limited to:
 
-```text
--10 <= Connectivity Score <= +10
-```
+**-10 to +10 points**
+
+### Current Connectivity Data Source
+
+The current connectivity layer uses **synthetic demo data generated by Buddy Walk**.
+
+It is not official Cox coverage information.
+
+The demo model gives stronger connectivity values around areas such as:
+
+- university campuses
+- dense residential areas
+- mixed-use areas
+- busy urban areas
+
+Other regions are assigned lower values to create realistic variation across the map.
+
+This feature demonstrates how real connectivity information could potentially be integrated into safety-aware navigation in the future.
 
 ---
 
-## Complete Example
+# Complete Safety Score Example
 
-Assume Buddy Walk evaluates one route.
+Assume Buddy Walk evaluates one walking route.
 
-### Starting Score
+## Starting Score
 
-```text
-50
-```
+The route begins with:
 
-### Safe Places
+**50 points**
+
+## Safe Places
 
 The route passes near:
 
-```text
-1 hospital = +5
-1 library  = +3
-1 cafe     = +1
+- 1 hospital: **+5**
+- 1 library: **+3**
+- 1 cafe: **+1**
 
-Safe Place Points = +9
-```
+Total Safe Place Points:
 
-### Lighting
+**+9**
 
-```text
-65% of the route is near mapped streetlights
+## Streetlights
 
-Lighting Points = +10
-```
+Approximately **65%** of the route is near mapped streetlights.
 
-### Crime
+According to the streetlight scoring system:
 
-Recent eligible incidents near the route:
+**Streetlight Points = +10**
 
-```text
-1 theft   = -2
-1 robbery = -4
+## Crime
 
-Crime Points = -6
-```
+Recent eligible incidents near the route include:
 
-### Connectivity
+- 1 theft: **-2**
+- 1 robbery: **-4**
 
-```text
-Average connectivity along the route = +5
-```
+Total Crime Points:
 
-### Final Calculation
+**-6**
 
-```text
-Safety Score =
-50
-+ 9
-+ 10
-- 6
-+ 5
+## Connectivity
 
-Safety Score = 68
-```
+The average connectivity value along the route is:
 
-According to the Buddy Walk score categories:
+**+5**
 
-```text
-68 -> 50–75 category
-```
+## Final Calculation
 
-So this route would be classified as:
+The final Safety Score is:
+
+**50 + 9 + 10 - 6 + 5 = 68**
+
+Therefore:
+
+**Safety Score = 68 / 100**
+
+---
+
+# Safety Score Categories
+
+| Score | Category |
+|---:|---|
+| 0–25 | High Risk |
+| 25–50 | Lower Safety |
+| 50–75 | Moderate / Safer |
+| 75–100 | Safer |
+
+A score of **68** belongs to the **50–75** category.
+
+The route would therefore be classified as:
 
 **Moderate / Safer**
 
 ---
 
-## Data Source Summary
+# Safety Score Formula
 
-| Criterion | Source | Type |
-|---|---|---|
-| Map | OpenStreetMap | Real |
-| Destination search | OpenStreetMap Nominatim | Real |
-| Walking routes | openrouteservice / OSM routing | Real |
-| Safe places | OpenStreetMap + Overpass API | Real mapped POI data |
-| Streetlights | City of Atlanta ArcGIS | Real public inventory data |
-| Crime incidents | Atlanta public ArcGIS crime dataset | Real public incident data |
-| Connectivity | Buddy Walk generated model | Synthetic demo data |
-| Safety Score weights | Buddy Walk | Custom heuristic |
+The overall concept can be summarized as:
+
+**Safety Score = 50 + Safe Place Score + Streetlight Score + Crime Score + Connectivity Score**
+
+After all factors are combined, the final value is limited to:
+
+**0 ≤ Safety Score ≤ 100**
 
 ---
 
-## Important Note
+# Data Source Summary
 
-Buddy Walk is a hackathon prototype.
+| Criterion | Source | Data Type |
+|---|---|---|
+| Base Map | OpenStreetMap | Real |
+| Destination Search | OpenStreetMap Nominatim | Real |
+| Walking Routes | OpenRouteService + OpenStreetMap | Real |
+| Safe Places | OpenStreetMap + Overpass API | Real mapped POI data |
+| Streetlights | City of Atlanta ArcGIS | Real public inventory data |
+| Crime Incidents | Atlanta public ArcGIS crime dataset | Real public incident data |
+| Connectivity | Buddy Walk generated model | Synthetic demo data |
+| Safety Score Weights | Buddy Walk | Custom heuristic |
 
-Its Safety Score should be interpreted as **additional route context**, not a guarantee of personal safety.
-
-Public datasets may be:
-
-- incomplete
-- delayed
-- outdated
-- temporarily unavailable
-
-Crime history cannot predict whether a future incident will happen, and a mapped streetlight or nearby public place does not guarantee safety.
-
-The purpose of Buddy Walk is to combine several useful signals into one understandable route comparison instead of relying only on travel time or distance.
+---
