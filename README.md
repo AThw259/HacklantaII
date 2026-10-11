@@ -142,14 +142,23 @@ The **Virtual Call** feature creates a simulated incoming-call experience.
 
 Its purpose is to give the user a quick social-interaction option if they feel uncomfortable walking alone or want to appear connected to another person.
 
-The feature can include:
+Before starting the call, the user can choose from **multiple virtual callers**. This allows the user to select the person who best fits the situation.
 
-- simulated incoming-call screen
-- caller name/profile
-- prerecorded or generated voice
-- call accept/end controls
+Example caller choices can include:
 
-The current project may still use the older internal folder name `fake-call`, but the user-facing feature is called **Virtual Call**.
+- Mom
+- Roommate
+- Partner
+
+Each caller can have a different name, generated voice,conversation style
+
+After selecting a caller, Buddy Walk displays a simulated call screen and plays the corresponding voice conversation.
+
+The feature includes:
+- Multiple caller choices
+- Caller selection screen
+- Simulated incoming-call screen
+- Call accept/end controls
 
 ---
 
@@ -157,75 +166,26 @@ The current project may still use the older internal folder name `fake-call`, bu
 
 The red **SOS** button provides quick access to the device's emergency calling flow.
 
-When activated, Buddy Walk can open:
+When the user presses the button, Buddy Walk shows two choices:
 
-```text
-tel:911
-```
-
-The website itself cannot silently complete an emergency call. The phone, browser, or operating system controls the final confirmation and call behavior.
-
-This keeps the emergency feature compatible with normal browser security restrictions.
+- **Call Police** — opens the phone's emergency calling option so the user can quickly contact emergency services.
+- **Cancel** — closes the SOS prompt 
 
 ---
 
 ## Movement Safety Monitoring
 
-Buddy Walk can monitor whether the user continues moving after a route is selected.
+Buddy Walk can monitor whether the user is still moving while following a route.
 
-The goal is to detect a situation where the user unexpectedly stops moving for a long period.
+If the user stops making meaningful movement for a certain period of time, the app displays an **"Are you safe?"** popup and gives the user a short amount of time to respond.
 
-### Normal Mode
+If the user presses **"I'm Safe"**, monitoring continues normally.
 
-In normal use:
+If the user does not respond before the countdown ends, Buddy Walk plays a loud alarm and opens the emergency calling flow.
 
-```text
-User selects a route
-        ↓
-Buddy Walk monitors movement
-        ↓
-No meaningful movement for 5 minutes
-        ↓
-"Are you safe?" popup
-        ↓
-30-second response window
-        ↓
-No response
-        ↓
-Loud alarm
-        ↓
-Open emergency calling flow
-```
+Small GPS changes are ignored so normal location drift is not treated as real movement.
 
-Meaningful movement normally requires enough displacement to avoid treating small GPS drift as real walking movement.
-
-When the user reaches the destination, monitoring stops.
-
----
-
-### 10-Second Hackathon Demo
-
-Waiting five minutes during a hackathon presentation is impractical, so Buddy Walk includes a fast demo mode.
-
-```text
-Press "Demo 10s"
-        ↓
-Wait 10 seconds
-        ↓
-"Are you safe?" popup
-        ↓
-15-second countdown
-        ↓
-Press "I'm Safe"
-        OR
-No response
-        ↓
-Loud alarm
-        ↓
-Open emergency calling flow
-```
-
-The demo timer is intentionally separate from normal GPS movement logic so it can be demonstrated reliably during a presentation.
+Monitoring automatically stops when the user reaches the destination.
 
 ---
 
